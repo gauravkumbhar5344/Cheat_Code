@@ -1,0 +1,134 @@
+import streamlit as st
+import speech_recognition as sr
+from langchain.chat_models import ChatGroq
+from langchain.agents import Tool
+from langchain.chains import ConversationalRetrievalChain
+from langchain.vectorstores import FAISS
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.document_loaders import TextLoader
+from langchain.tools import DuckDuckGoSearchRun, PythonREPLTool
+from langgraph.graph import Graph, END
+import tempfile
+
+# -----------------------------
+# Streamlit setup
+# -----------------------------
+st.set_page_config(page_title="Smart AI Orchestrator", layout="centered")
+st.title("🧠 Smart Agent Orchestration + 🎙️ Voice Input Assistant")
+
+# -----------------------------
+# Initialize session variables
+# -----------------------------
+if "vectorstore" not in st.session_state:
+    st.session_state.vectorstore = None
+if "rag_chain" not in st.session_state:
+    st.session_state.rag_chain = None
+
+# -----------------------------
+# Upload Documents Section
+# -----------------------------
+st.header("📄 Upload Knowledge Base")
+uploaded_files = st.file_uploader("Upload .txt or .md files", type=["txt", "md"], accept_multiple_files=True)
+
+if uploaded_files:
+    all_docs = []
+    for file in uploaded_files:
+        tmp_path = tempfile.NamedTemporaryFile(delete=False).name
+        with open(tmp_path, "wb") as f:
+            f.write(file.read())
+
+        loader = TextLoader(tmp_path)
+        docs = loader.load()
+        all_docs.extend(docs)
+
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    st.session_state.vectorstore = FAISS.from_documents(all_docs, embeddings)
+    st.success("✅ Documents processed successfully!")
+
+# -----------------------------
+# Voice Input Section
+# -----------------------------
+st.header("🎙️ Speak or Type Your Question")
+
+recognizer = sr.Recognizer()
+user_input = st.text_input("Or type your question:")
+
+if st.button("🎤 Speak"):
+    with sr.Microphone() as source:
+        st.info("Listening... Speak now!")
+        audio = recognizer.listen(source, timeout=5, phrase_time_limit=10)
+        try:
+            user_input = recognizer.recognize_google(audio)
+            st.success(f"You said: {user_input}")
+        except sr.UnknownValueError:
+            st.error("Sorry, I couldn’t understand your voice.")
+        except sr.RequestError:
+            st.error("Speech recognition service unavailable.")
+
+# -----------------------------
+# Agent Orchestration Setup
+# -----------------------------
+if user_input:
+    if not st.session_state.vectorstore:
+        st.warning("Please upload documents first.")
+    else:
+        llm = ChatGroq(temperature=0)
+        retriever = st.session_state.vectorstore.as_retriever()
+
+        # 1️⃣ RAG (Document Agent)
+        rag_chain = ConversationalRetrievalChain.from_llm(
+            llm=llm,
+            retriever=retriever,
+            return_source_documents=True
+        )
+
+        def doc_agent(query):
+            res = rag_chain({"question": query, "chat_history": []})
+            return res["answer"]
+
+        # 2️⃣ Search Agent
+        search_tool = DuckDuckGoSearchRun()
+        def search_agent(query):
+            return search_tool.run(query)
+
+        # 3️⃣ Math Agent
+        math_tool = PythonREPLTool()
+        def math_agent(query):
+            return math_tool.run(query)
+
+        # -----------------------------
+        # 🧠 LangGraph Smart Orchestrator
+        # -----------------------------
+        def router_node(state):
+            q = state["question"].lower()
+            if any(x in q for x in ["calculate", "sum", "multiply", "percent", "average"]):
+                return "math"
+            elif any(x in q for x in ["who", "what", "when", "news", "latest", "website", "online"]):
+                return "search"
+            else:
+                return "doc"
+
+        # Define graph
+        graph = Graph()
+
+        graph.add_node("doc", lambda s: {"answer": doc_agent(s["question"])})
+        graph.add_node("search", lambda s: {"answer": search_agent(s["question"])})
+        graph.add_node("math", lambda s: {"answer": math_agent(s["question"])})
+        graph.add_node("router", router_node)
+
+        graph.add_edge("router", "doc")
+        graph.add_edge("router", "search")
+        graph.add_edge("router", "math")
+        graph.add_edge("doc", END)
+        graph.add_edge("search", END)
+        graph.add_edge("math", END)
+
+        graph.set_entry_point("router")
+
+        # Run graph
+        with st.spinner("Thinking with multiple agents..."):
+            response = graph.invoke({"question": user_input})
+
+        # Display Answer
+        st.subheader("🧠 Assistant's Answer")
+        st.write(response["answer"])
