@@ -1,0 +1,89 @@
+import streamlit as st
+from langchain.chat_models import ChatGroq
+from langchain.agents import initialize_agent, Tool, AgentType
+from langchain.tools import DuckDuckGoSearchRun, PythonREPLTool
+from langchain.chains import ConversationalRetrievalChain
+from langchain.vectorstores import FAISS
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.document_loaders import TextLoader
+import tempfile
+
+st.set_page_config(page_title="Multi-Agent DevAssist", layout="wide")
+
+# -----------------------------
+# Global setup
+# -----------------------------
+if "vectorstore" not in st.session_state:
+    st.session_state.vectorstore = None
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+st.sidebar.title("Navigation")
+page = st.sidebar.radio("Go to", ["Upload Docs", "Chat"])
+
+# -----------------------------
+# 1️⃣ Upload Page
+# -----------------------------
+if page == "Upload Docs":
+    st.title("📚 Upload Reference Documents (Docs, APIs, etc.)")
+    uploaded_file = st.file_uploader("Upload a .txt or .md file")
+
+    if uploaded_file:
+        tmp_path = tempfile.NamedTemporaryFile(delete=False).name
+        with open(tmp_path, "wb") as f:
+            f.write(uploaded_file.read())
+
+        loader = TextLoader(tmp_path)
+        docs = loader.load()
+
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        st.session_state.vectorstore = FAISS.from_documents(docs, embeddings)
+        st.success("✅ Document knowledge base created!")
+
+# -----------------------------
+# 2️⃣ Chat Page
+# -----------------------------
+elif page == "Chat":
+    st.title("🤖 AI DevAssist — Multi-Agent Chat")
+
+    if not st.session_state.vectorstore:
+        st.warning("Please upload documents first!")
+    else:
+        llm = ChatGroq(temperature=0)
+        retriever = st.session_state.vectorstore.as_retriever()
+
+        # 🔹 Agent 1: Documentation Agent (RAG)
+        rag_chain = ConversationalRetrievalChain.from_llm(
+            llm=llm, retriever=retriever, return_source_documents=True
+        )
+        def doc_agent_tool(query):
+            result = rag_chain({"question": query, "chat_history": []})
+            return result["answer"]
+
+        # 🔹 Agent 2: Research Agent
+        research_tool = DuckDuckGoSearchRun()
+
+        # 🔹 Agent 3: Code/Logic Agent
+        python_tool = PythonREPLTool()
+
+        # Define all tools
+        tools = [
+            Tool(name="DocumentationQA", func=doc_agent_tool, description="Answers questions from uploaded docs."),
+            Tool(name="WebResearch", func=research_tool.run, description="Search the web for up-to-date info."),
+            Tool(name="PythonExec", func=python_tool.run, description="Execute or analyze Python code."),
+        ]
+
+        # 🧠 Coordinator Agent
+        coordinator_agent = initialize_agent(
+            tools=tools,
+            llm=llm,
+            agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+            verbose=True,
+        )
+
+        # UI Chat
+        user_input = st.text_input("Ask your development-related question:")
+        if user_input:
+            with st.spinner("Thinking with multiple agents..."):
+                response = coordinator_agent.run(user_input)
+                st.write("🧠 **Final Answer:**", response)

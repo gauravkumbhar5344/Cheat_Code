@@ -1,0 +1,104 @@
+import streamlit as st
+import os
+from langchain.chat_models import ChatGroq
+from langchain.chains import ConversationalRetrievalChain
+from langchain.memory import ConversationBufferMemory
+from langchain.vectorstores import FAISS
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.document_loaders import TextLoader
+import tempfile
+
+# -----------------------------
+# LangSmith Setup (Monitoring)
+# -----------------------------
+# 🔑 Replace this with your actual LangSmith API key
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_API_KEY"] = "YOUR_LANGSMITH_API_KEY"
+os.environ["LANGCHAIN_PROJECT"] = "RAG_Assistant_Memory_App"
+
+# -----------------------------
+# Streamlit UI Setup
+# -----------------------------
+st.set_page_config(page_title="RAG Assistant with Memory + LangSmith", layout="centered")
+
+if "vectorstore" not in st.session_state:
+    st.session_state.vectorstore = None
+if "memory" not in st.session_state:
+    st.session_state.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
+st.sidebar.title("Navigation")
+page = st.sidebar.radio("Go to", ["Upload Docs", "Chat"])
+
+# -----------------------------
+# 1️⃣ Upload Page
+# -----------------------------
+if page == "Upload Docs":
+    st.title("📄 Upload Documents for RAG Knowledge Base")
+    uploaded_files = st.file_uploader("Upload .txt files", type=["txt"], accept_multiple_files=True)
+
+    if uploaded_files:
+        all_docs = []
+        for file in uploaded_files:
+            tmp_path = tempfile.NamedTemporaryFile(delete=False).name
+            with open(tmp_path, "wb") as f:
+                f.write(file.read())
+
+            loader = TextLoader(tmp_path)
+            docs = loader.load()
+            all_docs.extend(docs)
+
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        st.session_state.vectorstore = FAISS.from_documents(all_docs, embeddings)
+        st.success("✅ Documents processed and stored successfully!")
+
+# -----------------------------
+# 2️⃣ Chat Page
+# -----------------------------
+elif page == "Chat":
+    st.title("💬 Chat with RAG Assistant (Memory + LangSmith Logging)")
+
+    if not st.session_state.vectorstore:
+        st.warning("Please upload documents first.")
+    else:
+        retriever = st.session_state.vectorstore.as_retriever()
+        llm = ChatGroq(temperature=0)
+
+        # 🔹 Conversational RAG Chain with Memory
+        rag_chain = ConversationalRetrievalChain.from_llm(
+            llm=llm,
+            retriever=retriever,
+            memory=st.session_state.memory,
+            return_source_documents=True
+        )
+
+        user_input = st.text_input("Ask something (memory enabled):")
+
+        if user_input:
+            with st.spinner("Thinking..."):
+                result = rag_chain({"question": user_input})
+                answer = result["answer"]
+                sources = result["source_documents"]
+
+            # Store chat
+            st.session_state.memory.save_context(
+                {"input": user_input}, {"output": answer}
+            )
+
+            # Display chat history
+            with st.expander("🧠 Conversation Memory"):
+                for i, msg in enumerate(st.session_state.memory.chat_memory.messages):
+                    if msg.type == "human":
+                        st.markdown(f"**👤 You:** {msg.content}")
+                    else:
+                        st.markdown(f"**🤖 Bot:** {msg.content}")
+
+            # Display answer
+            st.markdown(f"### 🧠 Answer\n{answer}")
+
+            # Display references
+            st.markdown("---")
+            st.markdown("### 📚 References")
+            for i, doc in enumerate(sources):
+                st.markdown(f"**Reference {i+1}:**")
+                st.markdown(f"> {doc.page_content[:400]}...")
+                st.caption(f"Source file: `{doc.metadata.get('source', 'unknown')}`")

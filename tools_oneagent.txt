@@ -1,0 +1,100 @@
+import streamlit as st
+from langchain.chat_models import ChatGroq
+from langchain.chains import ConversationalRetrievalChain
+from langchain.document_loaders import PyPDFLoader, TextLoader
+from langchain.vectorstores import FAISS
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.tools import DuckDuckGoSearchRun, PythonREPLTool
+from langchain.agents import initialize_agent, AgentType
+
+# -----------------------------
+# Shared global objects
+# -----------------------------
+if "vectorstore" not in st.session_state:
+    st.session_state.vectorstore = None
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+# -----------------------------
+# Page Navigation
+# -----------------------------
+st.sidebar.title("🧭 Navigation")
+page = st.sidebar.radio("Go to", ["Upload Documents", "Chat with Assistant"])
+
+# -----------------------------
+# 1️⃣ UPLOAD PAGE
+# -----------------------------
+if page == "Upload Documents":
+    st.title("📄 Upload Knowledge Base")
+
+    uploaded_files = st.file_uploader(
+        "Upload PDFs or text files", type=["pdf", "txt"], accept_multiple_files=True
+    )
+
+    if uploaded_files:
+        all_docs = []
+        for file in uploaded_files:
+            if file.name.endswith(".pdf"):
+                loader = PyPDFLoader(file)
+            else:
+                loader = TextLoader(file)
+            docs = loader.load()
+            all_docs.extend(docs)
+
+        st.write("✅ Documents Loaded Successfully")
+
+        # Create embeddings and vectorstore
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        st.session_state.vectorstore = FAISS.from_documents(all_docs, embeddings)
+        st.success("Vector database created successfully!")
+
+    if st.session_state.vectorstore:
+        st.info("You can now go to the Chat section from the sidebar 👉")
+
+# -----------------------------
+# 2️⃣ CHAT PAGE
+# -----------------------------
+elif page == "Chat with Assistant":
+    st.title("🤖 AI Assistant with Tools")
+
+    if not st.session_state.vectorstore:
+        st.warning("Please upload documents first on the 'Upload Documents' page.")
+    else:
+        # Setup RAG retriever
+        retriever = st.session_state.vectorstore.as_retriever()
+
+        # Initialize LLM (Groq + LangChain)
+        llm = ChatGroq(temperature=0)
+
+        # Create RAG chain
+        rag_chain = ConversationalRetrievalChain.from_llm(
+            llm=llm, retriever=retriever, return_source_documents=True
+        )
+
+        # Add some tools
+        search_tool = DuckDuckGoSearchRun()
+        python_tool = PythonREPLTool()
+
+        tools = [search_tool, python_tool]
+
+        # Initialize agent
+        agent = initialize_agent(
+            tools,
+            llm,
+            agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+            verbose=True,
+        )
+
+        # Chat interface
+        user_input = st.text_input("Ask something about your documents or use tools:")
+
+        if user_input:
+            with st.spinner("Thinking..."):
+                # Run the RAG query
+                rag_result = rag_chain({"question": user_input, "chat_history": st.session_state.chat_history})
+                agent_result = agent.run(user_input)
+
+                st.session_state.chat_history.append((user_input, rag_result["answer"]))
+
+                st.write("🧠 **RAG Answer:**", rag_result["answer"])
+                st.write("🧩 **Agent Tools Result:**", agent_result)
