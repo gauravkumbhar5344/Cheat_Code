@@ -1,0 +1,53 @@
+#Basic Guardrails 
+
+
+import streamlit as st
+from langchain_openai import ChatOpenAI
+from langchain.chains import RetrievalQA
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import OpenAIEmbeddings
+from langchain.schema import RunnableSequence, RunnableLambda, RunnableBranch
+
+# ======== CONFIG ========
+st.title("🚦 Guardrail-enabled AI Assistant")
+
+openai_api_key = st.secrets.get("OPENAI_API_KEY", "YOUR_KEY")
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3, openai_api_key=openai_api_key)
+embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
+
+# Dummy retriever (replace with actual FAISS or Chroma retriever)
+retriever = FAISS.from_texts(["LangChain helps build LLM applications.",
+                              "RAG combines retrieval and generation."],
+                             embeddings).as_retriever()
+
+qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
+
+# ======== GUARDRAIL FUNCTION ========
+ALLOWED_TOPICS = ["ai", "rag", "langchain", "application", "development", "faqs", "assist"]
+
+def guardrail_check(input_text: str) -> bool:
+    """Return True if question is relevant."""
+    text = input_text.lower()
+    return any(keyword in text for keyword in ALLOWED_TOPICS)
+
+# ======== GUARDRAIL NODE ========
+def guardrail_node(input_text: str):
+    if not guardrail_check(input_text):
+        return "⚠️ Sorry, I can’t answer this question. Please ask something relevant to AI Assist or application development."
+    return input_text
+
+# ======== FINAL CHAIN ========
+guardrail_chain = RunnableSequence(
+    RunnableLambda(guardrail_node) | RunnableBranch(
+        (lambda x: "⚠️ Sorry" in x, RunnableLambda(lambda x: x)),
+        (lambda x: True, qa_chain)
+    )
+)
+
+# ======== STREAMLIT INTERFACE ========
+query = st.text_input("Ask your question:")
+
+if st.button("Submit") and query:
+    with st.spinner("Processing..."):
+        result = guardrail_chain.invoke(query)
+        st.write(result)
