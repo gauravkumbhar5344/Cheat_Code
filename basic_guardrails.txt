@@ -51,3 +51,31 @@ if st.button("Submit") and query:
     with st.spinner("Processing..."):
         result = guardrail_chain.invoke(query)
         st.write(result)
+
+
+
+
+
+
+#Guardrails using small LLM 
+from langchain_openai import ChatOpenAI
+
+guard_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+moderator_prompt = """
+You are a moderation assistant.
+Only ALLOW questions about AI, LangChain, RAG, app development, or FAQs.
+If the question is outside these topics, respond 'DENY'.
+User: {query}
+"""
+
+response = guard_llm.invoke(moderator_prompt.format(query=query))
+if "DENY" in response.content:
+    return "Sorry, I can’t answer that question."
+
+
+
+
+
+
+
+
